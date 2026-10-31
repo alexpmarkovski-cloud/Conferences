@@ -72,30 +72,28 @@ class FakeQuotaError(Exception):
 def test_discover_keeps_rows_and_stops_when_quota_runs_out(monkeypatch):
     calls = []
 
-    def fake_ask(prompt):
-        calls.append(prompt)
+    def fake_ask(source, today):
+        calls.append(source["name"])
         if len(calls) == 1:
-            return '[{"name": "A"}]'
+            return [{"name": "A"}]
         raise FakeQuotaError("RESOURCE_EXHAUSTED")
 
-    monkeypatch.setattr(discovery.config, "GEMINI_API_KEY", "test")
-    monkeypatch.setattr(discovery, "ask_gemini", fake_ask)
+    monkeypatch.setitem(discovery.PROVIDERS, "gemini", fake_ask)
     monkeypatch.setattr(discovery.time, "sleep", lambda s: None)
     sources = [{"name": n, "url": f"https://{n}.com"} for n in ("a", "b", "c")]
-    rows = discovery.discover(TODAY, sources=sources)
+    rows = discovery.discover(TODAY, sources=sources, provider="gemini")
     assert rows == [{"name": "A"}]
     assert len(calls) == 3  # first source, then second source + one retry; third never called
 
 
 def test_discover_raises_when_quota_exhausted_from_start(monkeypatch):
-    def always_429(prompt):
+    def always_429(source, today):
         raise FakeQuotaError("RESOURCE_EXHAUSTED")
 
-    monkeypatch.setattr(discovery.config, "GEMINI_API_KEY", "test")
-    monkeypatch.setattr(discovery, "ask_gemini", always_429)
+    monkeypatch.setitem(discovery.PROVIDERS, "gemini", always_429)
     monkeypatch.setattr(discovery.time, "sleep", lambda s: None)
     try:
-        discovery.discover(TODAY, sources=[{"name": "a", "url": "https://a.com"}])
+        discovery.discover(TODAY, sources=[{"name": "a", "url": "https://a.com"}], provider="gemini")
     except discovery.QuotaExhausted:
         return
     raise AssertionError("expected QuotaExhausted")
