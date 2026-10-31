@@ -1,0 +1,16 @@
+[
+  {"name": "Silicon Slopes events", "url": "https://www.siliconslopes.com/events", "focus": "Utah tech and AI"},
+  {"name": "Silicon Slopes Summit", "url": "https://siliconslopes.com/summit", "focus": "Utah tech and AI"},
+  {"name": "Utah Technology Council events", "url": "https://www.utahtech.org/events", "focus": "Utah tech"},
+  {"name": "Utah Tech Week", "url": "https://utahtechweek.com", "focus": "Utah tech and AI"},
+  {"name": "Visit Salt Lake convention calendar", "url": "https://www.visitsaltlake.com/meetings/convention-calendar/", "focus": "Salt Lake City conventions"},
+  {"name": "dev.events Utah", "url": "https://dev.events/NA/US/Utah", "focus": "Utah developer and AI conferences"},
+  {"name": "Utah Business events", "url": "https://www.utahbusiness.com/events/", "focus": "Utah business, tech and finance"},
+  {"name": "CFA Society Utah events", "url": "https://www.cfasociety.org/utah/Pages/Events.aspx", "focus": "Utah finance and investing"},
+  {"name": "dev.events US AI", "url": "https://dev.events/NA/US/AI", "focus": "US AI conferences"},
+  {"name": "dev.events fintech", "url": "https://dev.events/fintech", "focus": "fintech conferences"},
+  {"name": "Techmeme events", "url": "https://www.techmeme.com/events", "focus": "major US tech and AI events"},
+  {"name": "Money20/20", "url": "https://www.money2020.com/", "focus": "fintech"},
+  {"name": "Finovate", "url": "https://www.finovate.com/", "focus": "fintech"},
+  {"name": "CFA Institute events", "url": "https://www.cfainstitute.org/events", "focus": "finance and investing"}
+]

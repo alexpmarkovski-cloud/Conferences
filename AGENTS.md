@@ -9,15 +9,18 @@ This project involves two kinds of agents:
 
 ## 1. Discovery agent (Gemini)
 
-**Role:** a research assistant that searches the web and reports upcoming conferences as structured data. It suggests candidates. It never writes to the database directly; `discovery.py` validates everything first.
+**Role:** a reader that pulls upcoming conferences out of known calendar pages and returns them as structured data. It only reports what the page says, not events from memory. It never writes to the database directly; `discovery.py` validates everything first.
 
-**Model:** `gemini-2.5-flash` with the `google_search` grounding tool (set in `conferences/config.py`).
+**Model:** `gemini-3.8-flash` with the `url_context` tool (set in `conferences/config.py`, override with `GEMINI_MODEL` in `.env`). Google Search grounding isn't part of the free tier, but `url_context` is.
 
-**Queries:** one call per topic × region pair, about 10 per run. For example:
+**Sources:** one call per page in [`conferences/sources.json`](conferences/sources.json), 14 by default. Edit that file to add or remove pages. They include:
 
-- AI / tech / finance conferences in Salt Lake County and Utah County (Salt Lake City, Sandy, Draper, Lehi, Provo, Orem…)
-- AI / tech / finance conferences elsewhere in Utah (Park City, Ogden, St. George…)
-- Major US AI / tech / finance conferences, in person or virtual
+- Utah: Silicon Slopes, Utah Technology Council, Utah Tech Week, Visit Salt Lake convention calendar, dev.events Utah, Utah Business, CFA Society Utah
+- National: dev.events US AI and fintech, Techmeme events, Money20/20, Finovate, CFA Institute
+
+Separately, `fetch_confs_tech()` pulls US and online events from the open [confs.tech dataset](https://github.com/tech-conferences/conference-data). That needs no model, and events whose names mention AI/ML are tagged `ai`.
+
+**Quota handling:** on a 429 the job waits 60 s and retries once. If it fails again, it skips the remaining pages and keeps what it already has, including the confs.tech results.
 
 **Output contract:** a JSON array of objects:
 
@@ -40,7 +43,7 @@ This project involves two kinds of agents:
 
 | Check | Why |
 |---|---|
-| Parse JSON out of the reply text; skip what doesn't parse | Grounded replies can't always use a strict response schema |
+| Parse JSON out of the reply text; skip what doesn't parse | Tool-using replies can't always use a strict response schema |
 | Required fields, valid ISO dates, `start_date <= end_date` | Drop malformed rows |
 | `end_date >= today` | Drop past events |
 | `category` in `ai/tech/finance` | Keep scope tight |

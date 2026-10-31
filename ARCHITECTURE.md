@@ -8,10 +8,12 @@
         ▼
  conferences.updater ──► db.prune()            delete events whose end_date < today
         │
-        ├──► discovery.discover()               ~10 Gemini calls with Google Search grounding
+        ├──► discovery.fetch_confs_tech()       open dataset (GitHub), US + online events
+        ├──► discovery.discover()               1 Gemini call per page in sources.json (url_context tool)
         │        ├─ parse JSON from reply text
         │        ├─ validate (name, dates, category, location)
         │        └─ check URL is reachable
+        │        (429 → wait 60 s, retry once, then keep what we have)
         │
         ├──► geo.classify()                     city → county → location tier
         └──► db.upsert()                        dedupe on normalized name + year
@@ -39,7 +41,8 @@
 | `conferences/db.py` | Connection, init, upsert, prune, ranked query, hide |
 | `conferences/geo.py` | Maps Utah cities to counties; assigns location tier |
 | `conferences/ranking.py` | Priority score and sort key |
-| `conferences/discovery.py` | Gemini queries, response parsing, validation, URL check |
+| `conferences/sources.json` | Calendar pages Gemini reads each week (editable) |
+| `conferences/discovery.py` | confs.tech import, Gemini page reading, parsing, validation, URL check |
 | `conferences/updater.py` | CLI entry point used by launchd |
 | `conferences/app.py` | Flask web server and JSON API |
 | `launchd/*.plist.template` + `scripts/` | Weekly schedule install/uninstall |
@@ -57,7 +60,7 @@
 | city, state, county | TEXT | `county` is set by `geo.py`, not trusted from the model |
 | is_virtual | INTEGER | 0/1 |
 | venue, url, description | TEXT | |
-| source | TEXT | `gemini`, `fixture`, or `manual` |
+| source | TEXT | `gemini`, `confs.tech`, `fixture`, or `manual` |
 | dedupe_key | TEXT UNIQUE | normalized name + start year |
 | first_seen, last_seen | TEXT | ISO timestamps |
 | hidden | INTEGER | 0/1, set from the UI |

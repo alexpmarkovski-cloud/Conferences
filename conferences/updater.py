@@ -8,10 +8,15 @@ import argparse
 import json
 import logging
 import sys
+import warnings
 from datetime import date
 from pathlib import Path
 
-from . import config, db, discovery
+# Python 3.9 + LibreSSL triggers harmless deprecation noise from urllib3 and google-auth.
+warnings.filterwarnings("ignore", message=".*OpenSSL.*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"google\..*")
+
+from . import config, db, discovery  # noqa: E402
 
 log = logging.getLogger("conferences.updater")
 
@@ -25,8 +30,9 @@ def setup_logging() -> None:
                     logging.StreamHandler(sys.stdout)):
         handler.setFormatter(fmt)
         root.addHandler(handler)
-    for noisy in ("httpx", "google_genai", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("google_genai").setLevel(logging.ERROR)
 
 
 def run(fixture: Path = None, dry_run: bool = False, check_urls: bool = True) -> dict:
@@ -35,21 +41,30 @@ def run(fixture: Path = None, dry_run: bool = False, check_urls: bool = True) ->
     db.init_db(conn)
     pruned = 0 if dry_run else db.prune(conn, today)
 
-    if fixture:
-        raw = json.loads(Path(fixture).read_text())
-        source = "fixture"
-    else:
-        raw = discovery.discover(today)
-        source = "gemini"
-
     checker = discovery.check_url if check_urls else None
-    records = discovery.clean(raw, today, url_checker=checker)
-    added = 0 if dry_run else db.upsert_many(conn, records, source=source)
+    # (source, rows, url_checker). confs.tech is curated, so its URLs aren't re-checked.
+    batches = []
+    if fixture:
+        batches.append(("fixture", json.loads(Path(fixture).read_text()), checker))
+    else:
+        batches.append(("confs.tech", discovery.fetch_confs_tech(today), None))
+        try:
+            batches.append(("gemini", discovery.discover(today), checker))
+        except discovery.QuotaExhausted as exc:
+            log.error("%s", exc)
+
+    found = valid = added = 0
+    for source, raw, url_checker in batches:
+        records = discovery.clean(raw, today, url_checker=url_checker)
+        found += len(raw)
+        valid += len(records)
+        if not dry_run:
+            added += db.upsert_many(conn, records, source=source)
     total = conn.execute("SELECT COUNT(*) FROM conferences").fetchone()[0]
     conn.close()
 
-    summary = {"pruned": pruned, "found": len(raw), "valid": len(records),
-               "added": added, "updated": len(records) - added, "total": total,
+    summary = {"pruned": pruned, "found": found, "valid": valid,
+               "added": added, "updated": 0 if dry_run else valid - added, "total": total,
                "dry_run": dry_run}
     log.info("Summary: %s", summary)
     return summary

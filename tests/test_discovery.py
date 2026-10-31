@@ -42,8 +42,60 @@ def test_validate_rejects_reversed_dates():
     assert rec is None and reason == "start after end"
 
 
-def test_build_queries_covers_every_pair():
-    queries = discovery.build_queries(TODAY)
-    assert len(queries) == 9
-    assert {(c, r) for c, r, _ in queries} == {
-        (c, r) for c in ("ai", "tech", "finance") for r in ("core", "utah", "other")}
+def test_sources_file_is_valid():
+    sources = discovery.load_sources()
+    assert sources and all(s["url"].startswith("https://") and s["name"] for s in sources)
+    prompt = discovery.build_prompt(sources[0], TODAY)
+    assert sources[0]["url"] in prompt and "2027-10-31" in prompt
+
+
+def test_from_confs_tech_maps_us_online_and_skips_foreign():
+    us = discovery.from_confs_tech({"name": "AI DevCon NYC", "url": "https://x.dev",
+                                    "startDate": "2027-01-05", "city": "Brooklyn, NY",
+                                    "country": "U.S.A.", "online": True})
+    assert us["city"] == "Brooklyn" and us["state"] == "NY"
+    assert us["category"] == "ai" and not us["is_virtual"] and us["end_date"] == "2027-01-05"
+
+    online = discovery.from_confs_tech({"name": "DevOps Days Online", "url": "https://y.dev",
+                                        "startDate": "2027-02-01", "endDate": "2027-02-02",
+                                        "online": True})
+    assert online["is_virtual"] and online["category"] == "tech"
+
+    assert discovery.from_confs_tech({"name": "PyCon DE", "country": "Germany",
+                                      "city": "Berlin", "online": False}) is None
+
+
+class FakeQuotaError(Exception):
+    code = 429
+
+
+def test_discover_keeps_rows_and_stops_when_quota_runs_out(monkeypatch):
+    calls = []
+
+    def fake_ask(prompt):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return '[{"name": "A"}]'
+        raise FakeQuotaError("RESOURCE_EXHAUSTED")
+
+    monkeypatch.setattr(discovery.config, "GEMINI_API_KEY", "test")
+    monkeypatch.setattr(discovery, "ask_gemini", fake_ask)
+    monkeypatch.setattr(discovery.time, "sleep", lambda s: None)
+    sources = [{"name": n, "url": f"https://{n}.com"} for n in ("a", "b", "c")]
+    rows = discovery.discover(TODAY, sources=sources)
+    assert rows == [{"name": "A"}]
+    assert len(calls) == 3  # first source, then second source + one retry; third never called
+
+
+def test_discover_raises_when_quota_exhausted_from_start(monkeypatch):
+    def always_429(prompt):
+        raise FakeQuotaError("RESOURCE_EXHAUSTED")
+
+    monkeypatch.setattr(discovery.config, "GEMINI_API_KEY", "test")
+    monkeypatch.setattr(discovery, "ask_gemini", always_429)
+    monkeypatch.setattr(discovery.time, "sleep", lambda s: None)
+    try:
+        discovery.discover(TODAY, sources=[{"name": "a", "url": "https://a.com"}])
+    except discovery.QuotaExhausted:
+        return
+    raise AssertionError("expected QuotaExhausted")

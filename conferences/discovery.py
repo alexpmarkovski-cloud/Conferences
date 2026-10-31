@@ -1,6 +1,10 @@
-"""Find conferences with Gemini + Google Search grounding, then validate the results.
+"""Find conferences from two free sources, then validate the results.
 
-Everything the model returns is untrusted: it is parsed as data, checked field by
+1. Source pages (conferences/sources.json): Gemini reads each page with the
+   url_context tool and extracts events as JSON.
+2. confs.tech: an open, curated dataset of tech conferences on GitHub.
+
+Everything Gemini returns is untrusted: it is parsed as data, checked field by
 field, and its URL must respond before it reaches the database.
 """
 import json
@@ -8,6 +12,7 @@ import logging
 import re
 import time
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Tuple
 
 import requests
@@ -16,31 +21,30 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-REGIONS = {
-    "core": "Salt Lake County or Utah County, Utah (e.g. Salt Lake City, Sandy, Draper, "
-            "South Jordan, Lehi, Provo, Orem, American Fork)",
-    "utah": "Utah outside Salt Lake and Utah County (e.g. Park City, Ogden, Logan, "
-            "St. George, Layton)",
-    "other": "the United States (major national events) or fully virtual/online",
-}
-CATEGORY_TOPICS = {
-    "ai": "artificial intelligence, machine learning, generative AI, or data science",
-    "tech": "software, developer, startup, cloud, cybersecurity, or general technology",
-    "finance": "finance, fintech, investing, banking, accounting, or crypto/web3",
-}
+SOURCES_FILE = Path(__file__).with_name("sources.json")
+CONFS_TECH_URL = ("https://raw.githubusercontent.com/tech-conferences/conference-data/"
+                  "main/conferences/{year}/{topic}.json")
+CONFS_TECH_TOPICS = ("data", "general", "python", "devops", "security", "opensource", "api")
+AI_PATTERN = re.compile(
+    r"\b(AI|A\.I\.|ML|LLMs?|GenAI|artificial intelligence|machine learning|deep learning|"
+    r"data science|generative)\b", re.I)
 
-PROMPT = """Search the web for upcoming in-person or virtual conferences about {topic}
-held in {region}, starting between {start} and {end}.
+PROMPT = """Read this page: {url}
+It is "{name}", a listing of {focus} events.
 
-Only include real events with an official website and announced dates. Skip meetups
-with no dates, webinars under half a day, and events you cannot confirm.
+List every conference, summit, expo, or multi-day tech week on the page that is about
+AI, technology, or finance and starts between {start} and {end}. Skip single meetups,
+webinars, job fairs, and anything unrelated (sports, weddings, medical, etc.).
+Use only what the page says; do not add events from memory.
 
 Reply with ONLY a JSON array (no prose). Each item:
-{{"name": str, "category": "{category}", "start_date": "YYYY-MM-DD",
+{{"name": str, "category": "ai" | "tech" | "finance", "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD", "city": str or null, "state": two-letter US state or null,
-  "is_virtual": bool, "venue": str or null, "url": official https URL,
+  "is_virtual": bool, "venue": str or null,
+  "url": the event's own https link if the page has one, otherwise "{url}",
   "description": one sentence}}
-Return [] if you find none."""
+Pick category "ai" when AI/ML is the main topic. Return [] if there are none or you
+cannot read the page."""
 
 REQUIRED = ("name", "category", "start_date", "end_date", "url")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -48,15 +52,19 @@ ALIVE_STATUSES = {401, 403, 405, 429}  # sites that block bots but exist
 USER_AGENT = "Mozilla/5.0 (Macintosh) ConferenceTracker/1.0"
 
 
-def build_queries(today: date, horizon_days: int = 365) -> List[Tuple[str, str, str]]:
-    """Return (category, region, prompt) for every category x region pair."""
-    start, end = today.isoformat(), (today + timedelta(days=horizon_days)).isoformat()
-    return [
-        (cat, region, PROMPT.format(topic=topic, region=REGIONS[region], start=start,
-                                    end=end, category=cat))
-        for cat, topic in CATEGORY_TOPICS.items()
-        for region in REGIONS
-    ]
+class QuotaExhausted(RuntimeError):
+    """Gemini keeps returning 429; further calls this run would fail too."""
+
+
+def load_sources(path: Path = SOURCES_FILE) -> List[dict]:
+    return json.loads(Path(path).read_text())
+
+
+def build_prompt(source: dict, today: date, horizon_days: int = 365) -> str:
+    return PROMPT.format(url=source["url"], name=source["name"],
+                         focus=source.get("focus", "upcoming"),
+                         start=today.isoformat(),
+                         end=(today + timedelta(days=horizon_days)).isoformat())
 
 
 def extract_json_array(text: str) -> list:
@@ -153,6 +161,50 @@ def clean(raw_rows: Iterable[dict], today: date,
     return out
 
 
+# --- confs.tech -----------------------------------------------------------------
+
+def from_confs_tech(item: dict) -> Optional[dict]:
+    """Map a confs.tech record to our raw format; None if it's outside the US and not online."""
+    country = item.get("country")
+    city, state, is_virtual = None, None, False
+    if country == "U.S.A." and item.get("city"):
+        city, _, state = item["city"].partition(",")
+        city, state = city.strip(), state.strip() or None
+    elif item.get("online"):
+        is_virtual = True
+    else:
+        return None
+    return {
+        "name": item.get("name"),
+        "category": "ai" if AI_PATTERN.search(item.get("name") or "") else "tech",
+        "start_date": item.get("startDate"),
+        "end_date": item.get("endDate") or item.get("startDate"),
+        "city": city,
+        "state": state,
+        "is_virtual": is_virtual,
+        "url": item.get("url"),
+        "description": None,
+    }
+
+
+def fetch_confs_tech(today: date) -> List[dict]:
+    rows: List[dict] = []
+    for year in (today.year, today.year + 1):
+        for topic in CONFS_TECH_TOPICS:
+            try:
+                resp = requests.get(CONFS_TECH_URL.format(year=year, topic=topic), timeout=15)
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                rows.extend(r for r in map(from_confs_tech, resp.json()) if r)
+            except (requests.RequestException, ValueError) as exc:
+                log.warning("confs.tech %s/%s failed: %s", year, topic, exc)
+    log.info("confs.tech returned %d US/online rows", len(rows))
+    return rows
+
+
+# --- Gemini over source pages ------------------------------------------------------
+
 def ask_gemini(prompt: str) -> str:
     from google import genai
     from google.genai import types
@@ -162,27 +214,57 @@ def ask_gemini(prompt: str) -> str:
         model=config.GEMINI_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
+            tools=[types.Tool(url_context=types.UrlContext())],
             temperature=0.2,
         ),
     )
     return resp.text or ""
 
 
-def discover(today: Optional[date] = None, pause_seconds: float = 6.0) -> List[dict]:
-    """Run every query against Gemini and return raw (unvalidated) rows."""
+def _is_quota_error(exc: Exception) -> bool:
+    return getattr(exc, "code", None) == 429 or "RESOURCE_EXHAUSTED" in str(exc)
+
+
+def ask_with_retry(prompt: str, retry_wait: float = 60.0) -> str:
+    """Call Gemini; on a 429 wait once for the per-minute window, then give up."""
+    try:
+        return ask_gemini(prompt)
+    except Exception as exc:
+        if not _is_quota_error(exc):
+            raise
+        log.info("Rate limited; waiting %.0fs and retrying once", retry_wait)
+        time.sleep(retry_wait)
+        try:
+            return ask_gemini(prompt)
+        except Exception as exc2:
+            if _is_quota_error(exc2):
+                raise QuotaExhausted(
+                    f"Gemini quota exhausted for model {config.GEMINI_MODEL}. "
+                    "Check https://ai.dev/rate-limit, or set GEMINI_MODEL in .env "
+                    "to a model with free-tier quota.") from exc2
+            raise
+
+
+def discover(today: Optional[date] = None, pause_seconds: float = 5.0,
+             sources: Optional[List[dict]] = None) -> List[dict]:
+    """Have Gemini read every source page and return raw (unvalidated) rows."""
     if not config.GEMINI_API_KEY or config.GEMINI_API_KEY == "your-key-here":
         raise RuntimeError("GEMINI_API_KEY is not set. Add it to .env (see README).")
     today = today or date.today()
+    sources = sources if sources is not None else load_sources()
     rows: List[dict] = []
-    queries = build_queries(today)
-    for i, (cat, region, prompt) in enumerate(queries):
+    for i, source in enumerate(sources):
         try:
-            found = extract_json_array(ask_gemini(prompt))
-            log.info("Query %s/%s returned %d rows", cat, region, len(found))
+            found = extract_json_array(ask_with_retry(build_prompt(source, today)))
+            log.info("%s: %d rows", source["name"], len(found))
             rows.extend(found)
-        except Exception as exc:  # one failed query shouldn't sink the run
-            log.warning("Query %s/%s failed: %s", cat, region, exc)
-        if i < len(queries) - 1:
+        except QuotaExhausted:
+            log.error("Stopping after %d/%d sources: quota exhausted", i, len(sources))
+            if not rows:
+                raise
+            break
+        except Exception as exc:  # one bad source shouldn't sink the run
+            log.warning("%s failed: %.200s", source["name"], exc)
+        if i < len(sources) - 1:
             time.sleep(pause_seconds)  # stay under free-tier requests-per-minute
     return rows
