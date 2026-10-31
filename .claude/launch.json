@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "conferences",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-W", "ignore", "-m", "conferences.app"],
+      "port": 5050
+    }
+  ]
+}

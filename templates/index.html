@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conference Tracker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Conference Tracker</h1>
+      <p class="sub">AI, tech &amp; finance · Utah first · <span id="updated">loading…</span></p>
+    </div>
+    <div class="filters">
+      <div class="seg" role="group" aria-label="Category" data-filter="category">
+        <button class="on" data-value="">All</button>
+        <button data-value="ai">AI</button>
+        <button data-value="tech">Tech</button>
+        <button data-value="finance">Finance</button>
+      </div>
+      <div class="seg" role="group" aria-label="Region" data-filter="region">
+        <button class="on" data-value="">Everywhere</button>
+        <button data-value="core">SL &amp; Utah Co.</button>
+        <button data-value="utah">Utah</button>
+        <button data-value="other">US &amp; Virtual</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="groups"></main>
+  <p id="empty" hidden>No upcoming conferences match. Run <code>python -m conferences.updater</code> to fetch some.</p>
+
+  <script>window.TIER_LABELS = {{ tier_labels | tojson }};</script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
