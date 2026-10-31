@@ -37,10 +37,6 @@ def setup_logging() -> None:
 
 def run(fixture: Path = None, dry_run: bool = False, check_urls: bool = True) -> dict:
     today = date.today()
-    conn = db.connect()
-    db.init_db(conn)
-    pruned = 0 if dry_run else db.prune(conn, today)
-
     checker = discovery.check_url if check_urls else None
     # (source, rows, url_checker). confs.tech is curated, so its URLs aren't re-checked.
     batches = []
@@ -53,10 +49,16 @@ def run(fixture: Path = None, dry_run: bool = False, check_urls: bool = True) ->
         except discovery.QuotaExhausted as exc:
             log.error("%s", exc)
 
+    cleaned = [(source, discovery.clean(raw, today, url_checker=url_checker), len(raw))
+               for source, raw, url_checker in batches]
+
+    # Discovery can take a long time, so open the database only once it's done.
+    conn = db.connect()
+    db.init_db(conn)
+    pruned = 0 if dry_run else db.prune(conn, today)
     found = valid = added = 0
-    for source, raw, url_checker in batches:
-        records = discovery.clean(raw, today, url_checker=url_checker)
-        found += len(raw)
+    for source, records, n_raw in cleaned:
+        found += n_raw
         valid += len(records)
         if not dry_run:
             added += db.upsert_many(conn, records, source=source)

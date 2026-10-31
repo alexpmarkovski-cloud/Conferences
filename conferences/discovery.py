@@ -225,14 +225,19 @@ def _is_quota_error(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 429 or "RESOURCE_EXHAUSTED" in str(exc)
 
 
+def _is_overloaded(exc: Exception) -> bool:
+    return getattr(exc, "code", None) == 503 or "UNAVAILABLE" in str(exc)
+
+
 def ask_with_retry(prompt: str, retry_wait: float = 60.0) -> str:
-    """Call Gemini; on a 429 wait once for the per-minute window, then give up."""
+    """Call Gemini; on a 429 or 503 wait and retry once. Repeated 429s end the run."""
     try:
         return ask_gemini(prompt)
     except Exception as exc:
-        if not _is_quota_error(exc):
+        if not (_is_quota_error(exc) or _is_overloaded(exc)):
             raise
-        log.info("Rate limited; waiting %.0fs and retrying once", retry_wait)
+        log.info("Gemini busy (%s); waiting %.0fs and retrying once",
+                 getattr(exc, "code", "?"), retry_wait)
         time.sleep(retry_wait)
         try:
             return ask_gemini(prompt)
